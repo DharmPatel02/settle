@@ -1,0 +1,23 @@
+name: settle
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      # Local development credentials only.
+      POSTGRES_USER: settle
+      POSTGRES_PASSWORD: settle
+      POSTGRES_DB: settle
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # "Container started" is not "accepting connections"; this tells Docker when it really is.
+      test: ["CMD-SHELL", "pg_isready -U settle -d settle"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
