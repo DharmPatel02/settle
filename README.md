@@ -1,5 +1,7 @@
 # Settle
 
+[![Payments API CI](https://github.com/DharmPatel02/settle/actions/workflows/payments-api.yml/badge.svg)](https://github.com/DharmPatel02/settle/actions/workflows/payments-api.yml)
+
 Settle is a payments and wallet API built with FastAPI and PostgreSQL. It uses an
 append-only, double-entry ledger and idempotent transfer requests to keep money movement safe.
 

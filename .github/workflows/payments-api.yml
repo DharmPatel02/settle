@@ -1,0 +1,53 @@
+name: Payments API CI
+
+on:
+  push:
+    paths:
+      - "services/payments-api/**"
+      - ".github/workflows/payments-api.yml"
+  pull_request:
+    paths:
+      - "services/payments-api/**"
+      - ".github/workflows/payments-api.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/payments-api
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: services/payments-api/uv.lock
+
+      - name: Set up Python
+        run: uv python install 3.14
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Check formatting
+        run: uv run ruff format --check .
+
+      - name: Test with coverage
+        run: uv run pytest --cov=payments_api --cov-report=term-missing --cov-report=xml:coverage.xml
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: payments-api-coverage
+          path: services/payments-api/coverage.xml
+          if-no-files-found: warn
