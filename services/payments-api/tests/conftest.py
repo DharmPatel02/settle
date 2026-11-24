@@ -84,8 +84,8 @@ def clean_database(request: pytest.FixtureRequest) -> Iterator[None]:
     with engine.begin() as connection:
         connection.execute(
             text(
-                "TRUNCATE ledger_entries, transfers, idempotency_keys, api_clients, accounts "
-                "RESTART IDENTITY CASCADE"
+                "TRUNCATE outbox_events, ledger_entries, transfers, idempotency_keys, api_clients, "
+                "accounts RESTART IDENTITY CASCADE"
             )
         )
         connection.execute(

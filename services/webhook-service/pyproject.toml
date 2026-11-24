@@ -1,0 +1,41 @@
+[project]
+name = "webhook-service"
+version = "0.1.0"
+description = "Consumes Settle transfer events and delivers signed merchant webhooks."
+authors = [
+    { name = "Dharm Patel", email = "dharmpatel0002@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "alembic>=1.20.1",
+    "confluent-kafka>=2.16.2",
+    "fastapi>=0.165.0",
+    "httpx>=0.28.1",
+    "psycopg[binary]>=3.3.9",
+    "pydantic-settings>=2.16.3",
+    "sqlalchemy>=2.1.9",
+    "uvicorn>=0.54.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.4,<0.14.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+# E/F: pycodestyle + pyflakes, I: import sorting, B: common bugs, UP: modern syntax
+select = ["E", "F", "I", "B", "UP"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.17.6",
+    "testcontainers>=4.15.0",
+]

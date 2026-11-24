@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from payments_api.errors import Problem
 from payments_api.models import IdempotencyKey, LedgerEntry, Transfer
+from payments_api.outbox import TRANSFER_COMPLETED, TRANSFER_REJECTED, transfer_event
 from payments_api.repositories import TransferRepository
 from payments_api.schemas import TransferCreate, TransferResponse
 
@@ -68,15 +69,19 @@ class TransferService:
             source = accounts[request.from_account_id]
             destination = accounts[request.to_account_id]
             if source.currency != destination.currency or source.currency != request.currency:
-                return self._complete_problem(
+                return self._reject(
+                    request,
                     client_id,
                     idempotency_key,
+                    "CURRENCY_MISMATCH",
                     Problem(422, "Currency mismatch", "All transfer currencies must match."),
                 )
             if not source.allow_negative and source.balance_minor < request.amount_minor:
-                return self._complete_problem(
+                return self._reject(
+                    request,
                     client_id,
                     idempotency_key,
+                    "INSUFFICIENT_FUNDS",
                     Problem(
                         422, "Insufficient funds", "The source account has insufficient funds."
                     ),
@@ -110,6 +115,9 @@ class TransferService:
             now = datetime.now(UTC)
             source.updated_at = now
             destination.updated_at = now
+            # Same transaction as the money movement: the event exists if and only if
+            # the transfer committed. The outbox relay publishes it to Kafka later.
+            self.session.add(transfer_event(transfer, TRANSFER_COMPLETED))
             self.session.flush()
 
             body = TransferResponse.model_validate(transfer).model_dump(mode="json")
@@ -162,6 +170,31 @@ class TransferService:
             return OperationResult(existing.response_code, existing.response_body)
         problem = Problem(409, "Request in progress", "A request with this key is still running.")
         return OperationResult(problem.status, problem.body())
+
+    def _reject(
+        self,
+        request: TransferCreate,
+        client_id: str,
+        idempotency_key: str,
+        reason: str,
+        problem: Problem,
+    ) -> OperationResult:
+        """Record a business rejection as a REJECTED transfer with no ledger entries."""
+        transfer = Transfer(
+            from_account_id=request.from_account_id,
+            to_account_id=request.to_account_id,
+            amount_minor=request.amount_minor,
+            currency=request.currency,
+            status="REJECTED",
+            failure_reason=reason,
+        )
+        self.session.add(transfer)
+        self.session.flush()
+        self.session.add(transfer_event(transfer, TRANSFER_REJECTED))
+        body = problem.body()
+        body["transfer_id"] = str(transfer.id)
+        self._complete_key(client_id, idempotency_key, problem.status, body)
+        return OperationResult(problem.status, body)
 
     def _complete_problem(
         self, client_id: str, idempotency_key: str, problem: Problem
