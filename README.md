@@ -8,15 +8,18 @@ append-only, double-entry ledger and idempotent transfer requests to keep money 
 ## Run locally
 
 ```bash
-docker compose -f infra/docker-compose.yml up -d postgres
+docker compose -f infra/docker-compose.yml up -d postgres redis
 cd services/payments-api
 cp .env.example .env
 uv sync
 uv run alembic upgrade head
+uv run python -m payments_api.create_api_client --name local
 uv run uvicorn payments_api.main:app --reload
 ```
 
-Open `http://127.0.0.1:8000/docs` for the Swagger UI. Run checks from the service directory:
+Copy the API key printed by the client command and use Swagger's **Authorize** button to set
+`X-API-Key`. Open `http://127.0.0.1:8000/docs` for the Swagger UI. Run checks from the service
+directory:
 
 ```bash
 uv run ruff check .

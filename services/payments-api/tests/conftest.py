@@ -1,4 +1,5 @@
 import os
+import uuid
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -14,8 +15,18 @@ from payments_api.config import get_settings
 from payments_api.constants import EXTERNAL_FUNDING_ID
 from payments_api.db import get_engine, get_sessionmaker
 from payments_api.main import app
+from payments_api.rate_limit import RateLimitDecision, get_transfer_limiter
+from payments_api.security import hash_api_key
 
 SERVICE_ROOT = Path(__file__).parents[1]
+TEST_API_KEY = "test-api-key"
+TEST_CLIENT_ID = uuid.UUID("00000000-0000-0000-0000-000000000100")
+
+
+class AlwaysAllowRateLimiter:
+    def consume(self, client_id: str) -> RateLimitDecision:
+        del client_id
+        return RateLimitDecision(allowed=True, retry_after_seconds=0)
 
 
 @pytest.fixture(scope="session")
@@ -48,6 +59,17 @@ def db_session(database_url: str) -> Iterator[Session]:
 @pytest.fixture()
 def client(database_url: str) -> Iterator[TestClient]:
     del database_url
+    app.dependency_overrides[get_transfer_limiter] = lambda: AlwaysAllowRateLimiter()
+    try:
+        with TestClient(app, headers={"X-API-Key": TEST_API_KEY}) as test_client:
+            yield test_client
+    finally:
+        app.dependency_overrides.pop(get_transfer_limiter, None)
+
+
+@pytest.fixture()
+def unauthenticated_client(database_url: str) -> Iterator[TestClient]:
+    del database_url
     with TestClient(app) as test_client:
         yield test_client
 
@@ -62,7 +84,7 @@ def clean_database(request: pytest.FixtureRequest) -> Iterator[None]:
     with engine.begin() as connection:
         connection.execute(
             text(
-                "TRUNCATE ledger_entries, transfers, idempotency_keys, accounts "
+                "TRUNCATE ledger_entries, transfers, idempotency_keys, api_clients, accounts "
                 "RESTART IDENTITY CASCADE"
             )
         )
@@ -73,6 +95,13 @@ def clean_database(request: pytest.FixtureRequest) -> Iterator[None]:
                 "VALUES (:id, 'EXTERNAL_FUNDING', 'USD', 0, true)"
             ),
             {"id": EXTERNAL_FUNDING_ID},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO api_clients (id, name, key_hash, is_admin) "
+                "VALUES (:id, 'Test client', :key_hash, false)"
+            ),
+            {"id": TEST_CLIENT_ID, "key_hash": hash_api_key(TEST_API_KEY)},
         )
 
     yield
