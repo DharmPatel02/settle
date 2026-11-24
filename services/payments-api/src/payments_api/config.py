@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import PostgresDsn
+from pydantic import Field, PostgresDsn, RedisDsn
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     database_url: PostgresDsn
+    redis_url: RedisDsn = RedisDsn("redis://localhost:6379/0")
+    transfer_rate_capacity: int = Field(default=10, gt=0)
+    transfer_rate_refill_per_second: float = Field(default=1.0, gt=0)
 
 
 @lru_cache

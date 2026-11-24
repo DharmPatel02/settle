@@ -12,6 +12,7 @@ class Problem(Exception):
     title: str
     detail: str
     type: str = "about:blank"
+    headers: dict[str, str] | None = None
 
     def body(self, instance: str | None = None) -> dict[str, object]:
         body: dict[str, object] = {
@@ -30,6 +31,7 @@ def problem_response(problem: Problem, instance: str | None = None) -> JSONRespo
         status_code=problem.status,
         content=problem.body(instance),
         media_type="application/problem+json",
+        headers=problem.headers,
     )
 
 

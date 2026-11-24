@@ -1,4 +1,8 @@
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
+
+from payments_api.models import ApiClient
+from payments_api.security import hash_api_key
 
 
 def create_account(client: TestClient, owner: str, currency: str = "USD") -> dict[str, object]:
@@ -94,3 +98,31 @@ def test_insufficient_funds_is_stored_and_moves_nothing(client: TestClient):
     assert first.json() == replay.json()
     assert client.get(f"/v1/accounts/{alice['id']}").json()["balance_minor"] == 0
     assert client.get(f"/v1/accounts/{bob['id']}").json()["balance_minor"] == 0
+
+
+def test_idempotency_keys_are_scoped_by_api_client(client: TestClient, db_session: Session):
+    second_key = "second-api-key"
+    db_session.add(
+        ApiClient(name="Second client", key_hash=hash_api_key(second_key), is_admin=False)
+    )
+    db_session.commit()
+    alice = create_account(client, "Alice")
+    bob = create_account(client, "Bob")
+    deposit(client, str(alice["id"]), 100, "fund-alice")
+    body = {
+        "from_account_id": alice["id"],
+        "to_account_id": bob["id"],
+        "amount_minor": 10,
+        "currency": "USD",
+    }
+
+    first = client.post("/v1/transfers", headers={"Idempotency-Key": "shared-key"}, json=body)
+    second = client.post(
+        "/v1/transfers",
+        headers={"X-API-Key": second_key, "Idempotency-Key": "shared-key"},
+        json=body,
+    )
+
+    assert first.status_code == second.status_code == 201
+    assert first.json()["id"] != second.json()["id"]
+    assert client.get(f"/v1/accounts/{alice['id']}").json()["balance_minor"] == 80
