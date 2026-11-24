@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     redis_url: RedisDsn = RedisDsn("redis://localhost:6379/0")
     transfer_rate_capacity: int = Field(default=10, gt=0)
     transfer_rate_refill_per_second: float = Field(default=1.0, gt=0)
+    kafka_bootstrap_servers: str = "localhost:9092"
+    transfer_events_topic: str = "transfers.events"
+    outbox_poll_interval_seconds: float = Field(default=0.5, gt=0)
+    outbox_batch_size: int = Field(default=100, gt=0)
 
 
 @lru_cache
