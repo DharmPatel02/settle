@@ -3,6 +3,8 @@ from payments_api.schemas import TransferResponse
 
 TRANSFER_COMPLETED = "TransferCompleted"
 TRANSFER_REJECTED = "TransferRejected"
+TRANSFER_DECLINED = "TransferDeclined"
+TRANSFER_PENDING_REVIEW = "TransferPendingReview"
 
 
 def transfer_event(transfer: Transfer, event_type: str) -> OutboxEvent:

@@ -7,6 +7,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Index,
     Numeric,
     String,
     Text,
@@ -28,6 +29,8 @@ class Transfer(Base):
             "status IN ('COMPLETED', 'REJECTED', 'PENDING_REVIEW', 'DECLINED')",
             name="valid_status",
         ),
+        # Risk features count a source account's recent transfers.
+        Index("ix_transfers_from_account_id_created_at", "from_account_id", "created_at"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

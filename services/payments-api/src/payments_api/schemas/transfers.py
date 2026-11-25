@@ -24,5 +24,7 @@ class TransferResponse(BaseModel):
     currency: str
     status: str
     failure_reason: str | None
+    risk_score: float | None
+    risk_model_version: str | None
     created_at: datetime
     updated_at: datetime

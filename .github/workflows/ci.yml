@@ -21,6 +21,8 @@ jobs:
             package: webhook_service
           - service: mock-merchant
             package: mock_merchant
+          - service: risk-service
+            package: risk_service
     defaults:
       run:
         working-directory: services/${{ matrix.service }}

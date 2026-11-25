@@ -16,11 +16,22 @@ from payments_api.constants import EXTERNAL_FUNDING_ID
 from payments_api.db import get_engine, get_sessionmaker
 from payments_api.main import app
 from payments_api.rate_limit import RateLimitDecision, get_transfer_limiter
+from payments_api.risk import RiskAssessment, RiskDecision, RiskFeatures, get_risk_scorer
 from payments_api.security import hash_api_key
 
 SERVICE_ROOT = Path(__file__).parents[1]
 TEST_API_KEY = "test-api-key"
 TEST_CLIENT_ID = uuid.UUID("00000000-0000-0000-0000-000000000100")
+TEST_ADMIN_API_KEY = "test-admin-api-key"
+TEST_ADMIN_CLIENT_ID = uuid.UUID("00000000-0000-0000-0000-000000000101")
+
+
+class AlwaysApproveRisk:
+    """Default for tests that are not about risk; test_risk.py uses the real client with respx."""
+
+    def assess(self, features: RiskFeatures) -> RiskAssessment:
+        del features
+        return RiskAssessment(RiskDecision.APPROVE, 0.01, "test-model")
 
 
 class AlwaysAllowRateLimiter:
@@ -60,11 +71,13 @@ def db_session(database_url: str) -> Iterator[Session]:
 def client(database_url: str) -> Iterator[TestClient]:
     del database_url
     app.dependency_overrides[get_transfer_limiter] = lambda: AlwaysAllowRateLimiter()
+    app.dependency_overrides.setdefault(get_risk_scorer, lambda: AlwaysApproveRisk())
     try:
         with TestClient(app, headers={"X-API-Key": TEST_API_KEY}) as test_client:
             yield test_client
     finally:
         app.dependency_overrides.pop(get_transfer_limiter, None)
+        app.dependency_overrides.pop(get_risk_scorer, None)
 
 
 @pytest.fixture()
@@ -102,6 +115,13 @@ def clean_database(request: pytest.FixtureRequest) -> Iterator[None]:
                 "VALUES (:id, 'Test client', :key_hash, false)"
             ),
             {"id": TEST_CLIENT_ID, "key_hash": hash_api_key(TEST_API_KEY)},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO api_clients (id, name, key_hash, is_admin) "
+                "VALUES (:id, 'Test admin', :key_hash, true)"
+            ),
+            {"id": TEST_ADMIN_CLIENT_ID, "key_hash": hash_api_key(TEST_ADMIN_API_KEY)},
         )
 
     yield
