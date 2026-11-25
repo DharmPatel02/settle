@@ -10,7 +10,9 @@ dependencies = [
     "alembic>=1.20.1",
     "confluent-kafka>=2.16.2",
     "fastapi>=0.159.1",
+    "httpx>=0.28.1",
     "psycopg[binary]>=3.3.6",
+    "pybreaker>=1.4.1",
     "pydantic-settings>=2.16.1",
     "redis>=7.1.0",
     "sqlalchemy>=2.1.6",
@@ -23,9 +25,9 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
-    "httpx>=0.28.1",
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
+    "respx>=0.23.1",
     "ruff>=0.17.1",
     "testcontainers>=4.15.0",
 ]

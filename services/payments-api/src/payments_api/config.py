@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field, PostgresDsn, RedisDsn
+from pydantic import Field, HttpUrl, PostgresDsn, RedisDsn
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,6 +17,11 @@ class Settings(BaseSettings):
     transfer_events_topic: str = "transfers.events"
     outbox_poll_interval_seconds: float = Field(default=0.5, gt=0)
     outbox_batch_size: int = Field(default=100, gt=0)
+    risk_service_url: HttpUrl = HttpUrl("http://localhost:8003")
+    risk_timeout_seconds: float = Field(default=0.15, gt=0)
+    risk_breaker_fail_max: int = Field(default=5, gt=0)
+    risk_breaker_reset_seconds: float = Field(default=30, gt=0)
+    risk_fallback_approve_max_minor: int = Field(default=10_000, ge=0)
 
 
 @lru_cache

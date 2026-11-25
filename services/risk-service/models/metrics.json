@@ -1,0 +1,54 @@
+{
+  "model_version": "risk-hgb-v1",
+  "sklearn_version": "1.9.1",
+  "data": {
+    "rows": 200000,
+    "seed": 42,
+    "fraud_rate": 0.02,
+    "split": {
+      "train": 120000,
+      "validation": 40000,
+      "test": 40000
+    }
+  },
+  "test_metrics": {
+    "hist_gradient_boosting": {
+      "pr_auc": 0.9633,
+      "roc_auc": 0.9991,
+      "recall_at_1%_fpr": 0.9812
+    },
+    "isolation_forest_baseline": {
+      "pr_auc": 0.5633,
+      "roc_auc": 0.988,
+      "recall_at_1%_fpr": 0.6012
+    },
+    "always_predict_legitimate_accuracy": 0.98
+  },
+  "thresholds": {
+    "review": 0.008757,
+    "decline": 0.581341,
+    "chosen_on": "validation",
+    "review_target_fpr": 0.02,
+    "decline_target_fpr": 0.001
+  },
+  "test_decisions": {
+    "APPROVE": {
+      "share_of_transfers": 0.9615,
+      "share_of_fraud": 0.0088,
+      "share_of_legitimate": 0.9809,
+      "precision": 0.0002
+    },
+    "REVIEW": {
+      "share_of_transfers": 0.0201,
+      "share_of_fraud": 0.1163,
+      "share_of_legitimate": 0.0181,
+      "precision": 0.1158
+    },
+    "DECLINE": {
+      "share_of_transfers": 0.0184,
+      "share_of_fraud": 0.875,
+      "share_of_legitimate": 0.0009,
+      "precision": 0.9498
+    }
+  }
+}

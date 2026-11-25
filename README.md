@@ -4,14 +4,17 @@
 
 Settle is a payments and wallet API built with FastAPI and PostgreSQL. It uses an
 append-only, double-entry ledger and idempotent transfer requests to keep money movement safe.
-Transfer events go through a transactional outbox to Kafka, and a webhook service delivers them
-to merchants as signed webhooks with retries and a dead-letter queue.
+Each transfer is scored by a fraud-risk model before money moves, with a timeout, circuit breaker
+and fallback policy around the call. Transfer events go through a transactional outbox to Kafka,
+and a webhook service delivers them to merchants as signed webhooks with retries and a
+dead-letter queue.
 
 | Service | What it does |
 |---|---|
 | `services/payments-api` | Accounts, transfers, ledger, idempotency, rate limiting, outbox relay |
 | `services/webhook-service` | Kafka consumer, signed webhook delivery, retries, DLQ admin API |
 | `services/mock-merchant` | Fake merchant that verifies signatures and fails on purpose |
+| `services/risk-service` | Fraud scoring model (scikit-learn) served by FastAPI; see its [model card](services/risk-service/MODEL_CARD.md) |
 
 ## Run locally
 
@@ -32,7 +35,7 @@ directory:
 ```bash
 uv run ruff check .
 uv run ruff format --check .
-uv run pytest --cov=payments_api   # or webhook_service, mock_merchant
+uv run pytest --cov=payments_api   # or webhook_service, mock_merchant, risk_service
 uv run alembic check                # payments-api and webhook-service
 ```
 
@@ -71,3 +74,20 @@ header) shows each delivery's attempts. To see the dead-letter queue, set the me
 `curl -X PUT localhost:8002/config/failure-rate -H "Content-Type: application/json" -d '{"failure_rate": 1}'`,
 make another transfer, and watch it reach `GET /admin/dlq` after 8 attempts. Replay it with
 `POST /admin/dlq/{id}/replay`.
+
+## Run the risk service
+
+payments-api calls the risk service at `RISK_SERVICE_URL` (default `http://localhost:8003`).
+Without it, transfers still work through the fallback policy: up to $100 is approved and larger
+amounts wait in the review queue.
+
+```bash
+# services/risk-service
+uv run uvicorn risk_service.main:app --port 8003
+uv run python -m risk_service.train            # optional: retrain the committed model
+uv run python scripts/measure_latency.py       # p50/p95/p99 against the running service
+```
+
+Held transfers are listed at `GET /admin/transfers/review` and approved or declined with
+`POST /admin/transfers/{id}/approve` or `/decline`. These need an admin API key:
+`uv run python -m payments_api.create_api_client --name admin --admin`.
