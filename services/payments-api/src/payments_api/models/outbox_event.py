@@ -31,6 +31,8 @@ class OutboxEvent(Base):
     # Kafka message key. Using the source account keeps one account's events in order.
     partition_key: Mapped[str] = mapped_column(Text, nullable=False)
     payload: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
+    # W3C trace context of the request that wrote the row, so the relay can continue its trace.
+    trace_context: Mapped[dict[str, str] | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

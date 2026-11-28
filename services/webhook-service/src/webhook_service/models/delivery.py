@@ -45,6 +45,8 @@ class WebhookDelivery(Base):
     )
     url: Mapped[str] = mapped_column(Text, nullable=False)
     payload: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
+    # Trace context of the consumer span that queued it, so the HTTP call joins the same trace.
+    trace_context: Mapped[dict[str, str] | None] = mapped_column(JSONB)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default=PENDING)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

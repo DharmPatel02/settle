@@ -6,6 +6,7 @@ fallback policy decides instead (ADR 0010).
 """
 
 import logging
+import time
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from functools import lru_cache
@@ -13,9 +14,11 @@ from typing import Protocol
 
 import httpx
 import pybreaker
+from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from pydantic import BaseModel
 
 from payments_api.config import get_settings
+from payments_api.metrics import RISK_CIRCUIT_STATE, RISK_FALLBACKS, RISK_LATENCY
 
 logger = logging.getLogger(__name__)
 
@@ -83,10 +86,13 @@ class RiskClient:
         self.fallback = fallback
 
     def assess(self, features: RiskFeatures) -> RiskAssessment:
+        started = time.perf_counter()
         try:
             # Every failure inside `call` counts towards opening the breaker. Once open, calls
             # fail immediately for `reset_timeout` seconds instead of waiting for a timeout.
-            return self.breaker.call(self._score, features)
+            assessment = self.breaker.call(self._score, features)
+            RISK_LATENCY.labels("model").observe(time.perf_counter() - started)
+            return assessment
         except pybreaker.CircuitBreakerError:
             reason = "circuit_open"
         except httpx.TimeoutException:
@@ -94,6 +100,8 @@ class RiskClient:
         except httpx.HTTPError, ValueError:
             reason = "error"
         logger.warning("Risk service unavailable (%s); using fallback policy", reason)
+        RISK_FALLBACKS.labels(reason).inc()
+        RISK_LATENCY.labels("fallback").observe(time.perf_counter() - started)
         return self.fallback.decide(features, reason)
 
     def _score(self, features: RiskFeatures) -> RiskAssessment:
@@ -103,19 +111,36 @@ class RiskClient:
         return RiskAssessment(body.decision, body.score, body.model_version)
 
 
+_STATE_VALUES = {pybreaker.STATE_CLOSED: 0, pybreaker.STATE_HALF_OPEN: 1, pybreaker.STATE_OPEN: 2}
+
+
+class BreakerStateMetric(pybreaker.CircuitBreakerListener):
+    def state_change(
+        self,
+        cb: pybreaker.CircuitBreaker,
+        old_state: pybreaker.CircuitBreakerState | None,
+        new_state: pybreaker.CircuitBreakerState,
+    ) -> None:
+        RISK_CIRCUIT_STATE.set(_STATE_VALUES[new_state.name])
+        logger.warning("Risk circuit breaker is now %s", new_state.name)
+
+
 @lru_cache
 def get_risk_scorer() -> RiskScorer:
     # One client per process, so every request shares the same breaker state and connections.
     settings = get_settings()
+    http = httpx.Client(
+        base_url=str(settings.risk_service_url),
+        timeout=settings.risk_timeout_seconds,
+    )
+    HTTPXClientInstrumentor.instrument_client(http)  # client span + traceparent header
     return RiskClient(
-        httpx.Client(
-            base_url=str(settings.risk_service_url),
-            timeout=settings.risk_timeout_seconds,
-        ),
+        http,
         pybreaker.CircuitBreaker(
             fail_max=settings.risk_breaker_fail_max,
             reset_timeout=settings.risk_breaker_reset_seconds,
             name="risk-service",
+            listeners=[BreakerStateMetric()],
         ),
         FallbackPolicy(approve_up_to_minor=settings.risk_fallback_approve_max_minor),
     )

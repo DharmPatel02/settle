@@ -7,7 +7,8 @@ append-only, double-entry ledger and idempotent transfer requests to keep money 
 Each transfer is scored by a fraud-risk model before money moves, with a timeout, circuit breaker
 and fallback policy around the call. Transfer events go through a transactional outbox to Kafka,
 and a webhook service delivers them to merchants as signed webhooks with retries and a
-dead-letter queue.
+dead-letter queue. Every service exports Prometheus metrics, and one OpenTelemetry trace
+follows a transfer from the API request to the merchant's webhook.
 
 | Service | What it does |
 |---|---|
@@ -49,6 +50,7 @@ on an existing volume, run
 ```bash
 # services/payments-api
 uv run python -m payments_api.outbox_relay
+uv run python -m payments_api.reconciliation   # re-checks the ledger invariant every minute
 
 # services/webhook-service
 uv run alembic upgrade head
@@ -91,3 +93,35 @@ uv run python scripts/measure_latency.py       # p50/p95/p99 against the running
 Held transfers are listed at `GET /admin/transfers/review` and approved or declined with
 `POST /admin/transfers/{id}/approve` or `/decline`. These need an admin API key:
 `uv run python -m payments_api.create_api_client --name admin --admin`.
+
+## Observability
+
+```bash
+docker compose -f infra/docker-compose.yml up -d --build prometheus grafana jaeger
+```
+
+| Tool | URL | What is there |
+|---|---|---|
+| Grafana | http://localhost:3000 | "Settle / Services (RED)" and "Settle / Payments flow" dashboards |
+| Prometheus | http://localhost:9090/alerts | Alert rules; each has a section in [docs/runbook.md](docs/runbook.md) |
+| Jaeger | http://localhost:16686 | Traces; set `OTEL_ENABLED=true` in each service's `.env` |
+
+Every FastAPI service serves `GET /metrics`. The worker processes serve metrics on their own
+ports: outbox relay 9101, reconciliation 9102, webhook consumer 9103, delivery worker 9104.
+Logs are JSON lines with a `trace_id`. Prometheus and Grafana configs are baked into their
+images, so rebuild them (`--build`) after editing files in `infra/`.
+
+## Load tests
+
+The scenarios are in [`loadtest/`](loadtest/): smoke, steady, spike, and hot-account contention.
+Run payments-api with a high rate limit for the load-test key
+(`TRANSFER_RATE_CAPACITY=1000000 TRANSFER_RATE_REFILL_PER_SECOND=1000000`), then:
+
+```bash
+cd loadtest
+uv run --project ../services/payments-api python seed.py --api-key <key> --accounts 10000
+k6 run -e API_KEY=<key> -e SCENARIO=steady -e RATE=100 -e LABEL=mine transfers.js
+```
+
+Raw k6 summaries are saved in `docs/perf-results/`; results and the bottleneck fix are written
+up in [docs/performance.md](docs/performance.md).

@@ -10,16 +10,28 @@ import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from opentelemetry import trace
+from opentelemetry.trace import SpanKind, Status, StatusCode
+from prometheus_client import start_http_server
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from payments_api.config import get_settings
 from payments_api.db import get_sessionmaker
 from payments_api.kafka import EventPublisher, KafkaPublisher, OutgoingMessage, ensure_topic
+from payments_api.metrics import OUTBOX_LAG, OUTBOX_PUBLISHED
 from payments_api.models import OutboxEvent
 from payments_api.outbox import event_envelope
+from payments_api.telemetry import (
+    configure_logging,
+    configure_tracing,
+    extract_context,
+    inject_context,
+    shutdown_tracing,
+)
 
 logger = logging.getLogger(__name__)
+tracer = trace.get_tracer(__name__)
 
 
 class OutboxRelay:
@@ -58,22 +70,61 @@ class OutboxRelay:
             if not events:
                 return 0
 
-            messages = [
-                OutgoingMessage(
-                    key=event.partition_key,
-                    value=json.dumps(event_envelope(event), separators=(",", ":")).encode(),
-                    headers={"event_type": event.event_type, "event_id": str(event.id)},
+            # One span per event, child of the request that wrote it. Its context travels in
+            # the Kafka headers, so the consumer's work joins the same trace.
+            spans = [
+                tracer.start_span(
+                    f"publish {self.topic}",
+                    context=extract_context(event.trace_context),
+                    kind=SpanKind.PRODUCER,
+                    attributes={
+                        "messaging.system": "kafka",
+                        "messaging.destination.name": self.topic,
+                        "settle.event_id": str(event.id),
+                        "settle.event_type": event.event_type,
+                    },
                 )
                 for event in events
             ]
-            # Raises if Kafka does not acknowledge every message; the transaction then rolls
-            # back and the rows stay unpublished for the next attempt.
-            self.publisher.publish(self.topic, messages)
+            messages = []
+            for event, span in zip(events, spans, strict=True):
+                with trace.use_span(span, end_on_exit=False):
+                    headers = {"event_type": event.event_type, "event_id": str(event.id)}
+                    headers.update(inject_context())
+                messages.append(
+                    OutgoingMessage(
+                        key=event.partition_key,
+                        value=json.dumps(event_envelope(event), separators=(",", ":")).encode(),
+                        headers=headers,
+                    )
+                )
+            try:
+                # Raises if Kafka does not acknowledge every message; the transaction then
+                # rolls back and the rows stay unpublished for the next attempt.
+                self.publisher.publish(self.topic, messages)
+            except Exception as exc:
+                for span in spans:
+                    span.set_status(Status(StatusCode.ERROR, str(exc)))
+                    span.end()
+                raise
+            for span in spans:
+                span.end()
 
             now = datetime.now(UTC)
             for event in events:
                 event.published_at = now
+            OUTBOX_PUBLISHED.inc(len(events))
             return len(events)
+
+    def measure_lag(self) -> float:
+        """Seconds since the oldest unpublished event was written; 0 when all are published."""
+        with self.session_factory() as session:
+            oldest = session.scalar(
+                select(func.min(OutboxEvent.created_at)).where(OutboxEvent.published_at.is_(None))
+            )
+        lag = 0.0 if oldest is None else max((datetime.now(UTC) - oldest).total_seconds(), 0.0)
+        OUTBOX_LAG.set(lag)
+        return lag
 
     def run(self, stop: threading.Event, poll_interval_seconds: float) -> None:
         while not stop.is_set():
@@ -82,6 +133,10 @@ class OutboxRelay:
             except Exception:
                 logger.exception("Outbox publish failed; retrying")
                 published = 0
+            try:
+                self.measure_lag()
+            except Exception:
+                logger.exception("Could not measure outbox lag")
             if published:
                 logger.info("Published %d outbox events", published)
             elif stop.wait(poll_interval_seconds):
@@ -89,8 +144,14 @@ class OutboxRelay:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    configure_logging("outbox-relay")
     settings = get_settings()
+    configure_tracing(
+        "outbox-relay",
+        enabled=settings.otel_enabled,
+        otlp_endpoint=settings.otel_exporter_otlp_endpoint,
+    )
+    start_http_server(settings.relay_metrics_port)
     ensure_topic(settings.kafka_bootstrap_servers, settings.transfer_events_topic)
     relay = OutboxRelay(
         get_sessionmaker(),
@@ -101,8 +162,13 @@ def main() -> None:
     stop = threading.Event()
     signal.signal(signal.SIGINT, lambda *_: stop.set())
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
-    logger.info("Outbox relay started, publishing to %s", settings.transfer_events_topic)
+    logger.info(
+        "Outbox relay started, publishing to %s, metrics on :%d",
+        settings.transfer_events_topic,
+        settings.relay_metrics_port,
+    )
     relay.run(stop, settings.outbox_poll_interval_seconds)
+    shutdown_tracing()
 
 
 if __name__ == "__main__":

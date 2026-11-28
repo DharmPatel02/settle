@@ -56,5 +56,33 @@ services:
       timeout: 10s
       retries: 10
 
+  prometheus:
+    build: ./prometheus
+    ports:
+      - "9090:9090"
+    extra_hosts:
+      # Docker Desktop provides host.docker.internal; this adds it on Linux too.
+      - "host.docker.internal:host-gateway"
+
+  grafana:
+    build: ./grafana
+    ports:
+      - "3000:3000"
+    environment:
+      # Local development only: open dashboards without logging in.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    depends_on:
+      - prometheus
+
+  jaeger:
+    # Receives traces over OTLP (4317 gRPC, 4318 HTTP); UI on 16686. Traces are kept in memory.
+    image: jaegertracing/jaeger:2.9.0
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+      - "4318:4318"
+
 volumes:
   pgdata:

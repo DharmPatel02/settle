@@ -38,7 +38,7 @@ def test_redelivered_event_is_ignored(db_session: Session):
     with get_sessionmaker()() as session:
         assert handle_event(session, event) == 1
     with get_sessionmaker()() as session:
-        assert handle_event(session, event) == 0
+        assert handle_event(session, event) is None
 
     assert count(db_session, WebhookDelivery) == 1
     assert count(db_session, ProcessedEvent) == 1

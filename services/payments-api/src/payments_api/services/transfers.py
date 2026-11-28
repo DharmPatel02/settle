@@ -1,5 +1,6 @@
 import hashlib
 import json
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -11,6 +12,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from payments_api.errors import Problem
+from payments_api.metrics import TRANSFER_DURATION, TRANSFERS
 from payments_api.models import Account, IdempotencyKey, LedgerEntry, Transfer
 from payments_api.outbox import (
     TRANSFER_COMPLETED,
@@ -52,6 +54,15 @@ class TransferService:
 
     def create(
         self, request: TransferCreate, *, client_id: str, idempotency_key: str
+    ) -> OperationResult:
+        started = time.perf_counter()
+        try:
+            return self._create(request, client_id, idempotency_key)
+        finally:
+            TRANSFER_DURATION.observe(time.perf_counter() - started)
+
+    def _create(
+        self, request: TransferCreate, client_id: str, idempotency_key: str
     ) -> OperationResult:
         hashed_request = request_hash(request)
         # Rule: no network calls while holding locks. The risk call finishes before the
@@ -148,6 +159,7 @@ class TransferService:
             if not self._has_funds(source, transfer.amount_minor):
                 transfer.status = "REJECTED"
                 transfer.failure_reason = "INSUFFICIENT_FUNDS"
+                TRANSFERS.labels("REJECTED").inc()
                 self.session.flush()
                 self.session.add(transfer_event(transfer, TRANSFER_REJECTED))
                 body = Problem(
@@ -158,6 +170,7 @@ class TransferService:
 
             transfer.status = "COMPLETED"
             self._move_money(transfer, source, destination)
+            TRANSFERS.labels("COMPLETED").inc()
             return OperationResult(
                 200, TransferResponse.model_validate(transfer).model_dump(mode="json")
             )
@@ -167,6 +180,7 @@ class TransferService:
             transfer = self._lock_pending(transfer_id)
             transfer.status = "DECLINED"
             transfer.failure_reason = "REVIEW_DECLINED"
+            TRANSFERS.labels("DECLINED").inc()
             self.session.flush()
             self.session.add(transfer_event(transfer, TRANSFER_DECLINED))
             return OperationResult(
@@ -232,6 +246,8 @@ class TransferService:
         )
         self.session.add(transfer)
         self.session.flush()
+        # Counted before commit: a rare rollback after this point over-counts by one.
+        TRANSFERS.labels(status).inc()
         return transfer
 
     def _move_money(self, transfer: Transfer, source: Account, destination: Account) -> None:

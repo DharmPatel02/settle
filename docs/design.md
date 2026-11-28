@@ -46,6 +46,20 @@ and training on real fraud labels are outside the current boundary.
 5. Exhausted deliveries become `DEAD`, are published to `transfers.events.dlq`, and can be
    replayed with `POST /admin/dlq/{id}/replay`.
 
+## Observability
+
+- Every process exports Prometheus metrics: HTTP rate, errors and duration per route, plus
+  `settle_*` business metrics (transfers by status, risk latency and fallbacks, circuit state,
+  outbox lag, events consumed, webhook results, DLQ size, connection pool use, reconciliation
+  mismatches). Dashboards and alert rules live in `infra/`; each alert has a section in
+  `docs/runbook.md`.
+- One OpenTelemetry trace follows a transfer from the API through risk-service, the outbox,
+  Kafka, the consumer, and every webhook attempt to the merchant. The trace context is stored on
+  the outbox row and on each delivery so the asynchronous hops stay connected (ADR 0012).
+- Logs are JSON lines with `trace_id`, so a log line leads to its trace.
+- A reconciliation process re-checks the ledger invariant every minute and alerts on any
+  mismatch.
+
 ## API sketch
 
 - All `/v1` routes require `X-API-Key`; health endpoints remain public.
@@ -53,6 +67,7 @@ and training on real fraud labels are outside the current boundary.
 - `GET /v1/accounts/{id}/entries?cursor=&limit=`
 - `POST /v1/deposits` with `Idempotency-Key`
 - `POST /v1/transfers` with `Idempotency-Key`; `GET /v1/transfers/{id}`
+- `GET /metrics` on every service (unauthenticated; scrape from the internal network only)
 - Admin API key: `GET /admin/transfers/review`, `POST /admin/transfers/{id}/approve`,
   `POST /admin/transfers/{id}/decline`
 - Risk service (internal): `POST /v1/score`

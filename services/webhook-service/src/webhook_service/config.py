@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     retry_cap_seconds: float = Field(default=3600.0, gt=0)
     max_attempts: int = Field(default=8, gt=0)
 
+    otel_enabled: bool = False
+    otel_exporter_otlp_endpoint: str = "http://localhost:4318"
+    consumer_metrics_port: int = 9103
+    worker_metrics_port: int = 9104
+
 
 @lru_cache
 def get_settings() -> Settings:

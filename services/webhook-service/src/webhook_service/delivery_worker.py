@@ -8,23 +8,41 @@ import logging
 import random
 import signal
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 import httpx
-from sqlalchemy import select
+from opentelemetry import trace
+from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+from opentelemetry.trace import Status, StatusCode
+from prometheus_client import start_http_server
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from webhook_service.backoff import retry_delay_seconds
 from webhook_service.config import Settings, get_settings
 from webhook_service.db import get_sessionmaker
 from webhook_service.kafka import EventPublisher, KafkaPublisher, OutgoingMessage, ensure_topic
+from webhook_service.metrics import (
+    DELIVERY_BACKLOG,
+    DLQ_SIZE,
+    WEBHOOK_DELIVERIES,
+    WEBHOOK_DELIVERY_DURATION,
+)
 from webhook_service.models import DEAD, PENDING, SUCCEEDED, WebhookDelivery, WebhookSubscription
 from webhook_service.signing import signed_headers
+from webhook_service.telemetry import (
+    configure_logging,
+    configure_tracing,
+    extract_context,
+    shutdown_tracing,
+)
 
 logger = logging.getLogger(__name__)
+tracer = trace.get_tracer(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +52,7 @@ class ClaimedDelivery:
     payload: dict[str, object]
     secret: str
     attempt: int
+    trace_context: dict[str, str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,7 +92,30 @@ class DeliveryWorker:
             error = self.send(delivery)
             self.record(delivery, error)
         self.publish_dead_letters()
+        self.update_gauges()
         return len(claimed)
+
+    def update_gauges(self) -> None:
+        with self.session_factory() as session:
+            DLQ_SIZE.set(
+                session.scalar(
+                    select(func.count())
+                    .select_from(WebhookDelivery)
+                    .where(WebhookDelivery.status == DEAD)
+                )
+                or 0
+            )
+            DELIVERY_BACKLOG.set(
+                session.scalar(
+                    select(func.count())
+                    .select_from(WebhookDelivery)
+                    .where(
+                        WebhookDelivery.status == PENDING,
+                        WebhookDelivery.next_attempt_at <= self.clock(),
+                    )
+                )
+                or 0
+            )
 
     def claim_due(self) -> list[ClaimedDelivery]:
         """Lease due deliveries in a short transaction, so no lock is held during HTTP calls.
@@ -104,6 +146,7 @@ class DeliveryWorker:
                         payload=delivery.payload,
                         secret=secret,
                         attempt=delivery.attempts,
+                        trace_context=delivery.trace_context,
                     )
                 )
             return claimed
@@ -112,17 +155,29 @@ class DeliveryWorker:
         """POST the signed webhook. Returns None on success, or a short error description."""
         body = json.dumps(delivery.payload, separators=(",", ":")).encode()
         timestamp = int(self.clock().timestamp())
-        try:
-            response = self.http.post(
-                delivery.url,
-                content=body,
-                headers=signed_headers(delivery.secret, timestamp, body),
-            )
-        except httpx.HTTPError as exc:
-            return f"{type(exc).__name__}: {exc}"[:500]
-        if response.is_success:
-            return None
-        return f"HTTP {response.status_code}"
+        # Joins the trace of the transfer that caused this webhook. Retries hours later still
+        # land in the same trace, one span per attempt.
+        with tracer.start_as_current_span(
+            "deliver webhook",
+            context=extract_context(delivery.trace_context),
+            attributes={"settle.delivery_id": str(delivery.id), "settle.attempt": delivery.attempt},
+        ) as span:
+            started = time.perf_counter()
+            try:
+                response = self.http.post(
+                    delivery.url,
+                    content=body,
+                    headers=signed_headers(delivery.secret, timestamp, body),
+                )
+            except httpx.HTTPError as exc:
+                error = f"{type(exc).__name__}: {exc}"[:500]
+            else:
+                error = None if response.is_success else f"HTTP {response.status_code}"
+            finally:
+                WEBHOOK_DELIVERY_DURATION.observe(time.perf_counter() - started)
+            if error is not None:
+                span.set_status(Status(StatusCode.ERROR, error))
+            return error
 
     def record(self, claimed: ClaimedDelivery, error: str | None) -> None:
         now = self.clock()
@@ -135,6 +190,7 @@ class DeliveryWorker:
                 return
 
             if error is None:
+                WEBHOOK_DELIVERIES.labels("succeeded").inc()
                 delivery.status = SUCCEEDED
                 delivery.delivered_at = now
                 delivery.last_error = None
@@ -143,11 +199,13 @@ class DeliveryWorker:
 
             delivery.last_error = error
             if claimed.attempt >= self.policy.max_attempts:
+                WEBHOOK_DELIVERIES.labels("dead").inc()
                 delivery.status = DEAD
                 logger.warning(
                     "Delivery %s is DEAD after %d attempts", delivery.id, claimed.attempt
                 )
                 return
+            WEBHOOK_DELIVERIES.labels("retry").inc()
             delay = retry_delay_seconds(
                 claimed.attempt,
                 base_seconds=self.policy.base_seconds,
@@ -207,9 +265,11 @@ def dead_letter(delivery: WebhookDelivery) -> dict[str, object]:
 
 
 def build_worker(settings: Settings) -> DeliveryWorker:
+    http = httpx.Client(timeout=settings.delivery_timeout_seconds)
+    HTTPXClientInstrumentor.instrument_client(http)  # adds traceparent to each webhook request
     return DeliveryWorker(
         get_sessionmaker(),
-        httpx.Client(timeout=settings.delivery_timeout_seconds),
+        http,
         KafkaPublisher(settings.kafka_bootstrap_servers),
         dlq_topic=settings.dead_letter_topic,
         policy=RetryPolicy(
@@ -223,8 +283,14 @@ def build_worker(settings: Settings) -> DeliveryWorker:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    configure_logging("webhook-delivery-worker")
     settings = get_settings()
+    configure_tracing(
+        "webhook-delivery-worker",
+        enabled=settings.otel_enabled,
+        otlp_endpoint=settings.otel_exporter_otlp_endpoint,
+    )
+    start_http_server(settings.worker_metrics_port)
     ensure_topic(settings.kafka_bootstrap_servers, settings.dead_letter_topic)
     worker = build_worker(settings)
     stop = threading.Event()
@@ -239,6 +305,7 @@ def main() -> None:
             attempted = 0
         if not attempted:
             stop.wait(settings.delivery_poll_interval_seconds)
+    shutdown_tracing()
 
 
 if __name__ == "__main__":

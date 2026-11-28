@@ -22,10 +22,12 @@ def event_accounts(event: dict[str, object]) -> set[uuid.UUID]:
         raise InvalidEvent("event data is missing account ids") from exc
 
 
-def handle_event(session: Session, event: dict[str, object]) -> int:
+def handle_event(
+    session: Session, event: dict[str, object], trace_context: dict[str, str] | None = None
+) -> int | None:
     """Record the event and queue one delivery per matching subscription.
 
-    Returns the number of deliveries created; 0 for an event already processed. The dedupe
+    Returns the number of deliveries created, or None for an event already processed. The dedupe
     row and the deliveries commit together, so a crash leaves either both or neither.
     """
     try:
@@ -43,7 +45,7 @@ def handle_event(session: Session, event: dict[str, object]) -> int:
             .returning(ProcessedEvent.event_id)
         )
         if first_time is None:
-            return 0
+            return None
 
         subscriptions = session.scalars(
             select(WebhookSubscription).where(WebhookSubscription.account_id.in_(accounts))
@@ -55,6 +57,7 @@ def handle_event(session: Session, event: dict[str, object]) -> int:
                 subscription_id=subscription.id,
                 url=subscription.url,
                 payload=event,
+                trace_context=trace_context or None,
                 status=PENDING,
                 attempts=0,
                 next_attempt_at=now,
