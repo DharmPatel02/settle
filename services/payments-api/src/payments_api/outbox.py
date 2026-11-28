@@ -1,5 +1,6 @@
 from payments_api.models import OutboxEvent, Transfer
 from payments_api.schemas import TransferResponse
+from payments_api.telemetry import inject_context
 
 TRANSFER_COMPLETED = "TransferCompleted"
 TRANSFER_REJECTED = "TransferRejected"
@@ -15,6 +16,7 @@ def transfer_event(transfer: Transfer, event_type: str) -> OutboxEvent:
         event_type=event_type,
         partition_key=str(transfer.from_account_id),
         payload=TransferResponse.model_validate(transfer).model_dump(mode="json"),
+        trace_context=inject_context() or None,
     )
 
 

@@ -46,3 +46,10 @@ def test_without_a_loaded_model_the_service_is_not_ready():
     response = client.post("/v1/score", json=NORMAL)
     assert response.status_code == 503
     assert response.json()["title"] == "Model not loaded"
+
+
+def test_metrics_count_decisions(client: TestClient):
+    client.post("/v1/score", json=NORMAL)
+    body = client.get("/metrics").text
+    assert 'settle_risk_decisions_total{decision="APPROVE"}' in body
+    assert 'http_requests_total{handler="/v1/score",method="POST",status="2xx"}' in body

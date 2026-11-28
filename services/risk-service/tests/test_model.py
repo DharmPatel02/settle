@@ -91,3 +91,10 @@ def test_training_writes_a_loadable_model_that_beats_the_baseline(tmp_path: Path
     assert sum(bucket["share_of_transfers"] for bucket in decisions.values()) == pytest.approx(
         1, abs=1e-3
     )
+
+
+def test_predictions_use_one_openmp_thread():
+    from threadpoolctl import threadpool_info
+
+    openmp = [pool for pool in threadpool_info() if pool["internal_api"] == "openmp"]
+    assert openmp and all(pool["num_threads"] == 1 for pool in openmp)

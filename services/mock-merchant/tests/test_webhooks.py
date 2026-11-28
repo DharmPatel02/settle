@@ -75,3 +75,8 @@ def test_failure_rate_must_be_a_probability(client: TestClient):
 
 def test_live(client: TestClient):
     assert client.get("/health/live").json() == {"status": "ok"}
+
+
+def test_metrics_endpoint(client: TestClient):
+    client.get("/received")
+    assert 'http_requests_total{handler="/received"' in client.get("/metrics").text

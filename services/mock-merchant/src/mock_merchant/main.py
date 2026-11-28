@@ -11,13 +11,19 @@ import random
 import threading
 import time
 from collections import Counter
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from functools import lru_cache
 from typing import Annotated
 
 from fastapi import FastAPI, Header, Request
 from fastapi.responses import JSONResponse
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from mock_merchant.telemetry import configure_logging, configure_tracing
 
 
 class Settings(BaseSettings):
@@ -27,6 +33,8 @@ class Settings(BaseSettings):
     failure_rate: float = Field(default=0.3, ge=0, le=1)
     # Reject requests signed more than this long ago, so a captured request cannot be replayed.
     timestamp_tolerance_seconds: int = Field(default=300, gt=0)
+    otel_enabled: bool = False
+    otel_exporter_otlp_endpoint: str = "http://localhost:4318"
 
 
 @lru_cache
@@ -59,8 +67,31 @@ def problem(status: int, title: str, detail: str) -> JSONResponse:
     )
 
 
-app = FastAPI(title="Settle Mock Merchant", version="0.1.0")
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    settings = get_settings()
+    configure_logging("mock-merchant")
+    configure_tracing(
+        "mock-merchant",
+        enabled=settings.otel_enabled,
+        otlp_endpoint=settings.otel_exporter_otlp_endpoint,
+    )
+    yield
+
+
+app = FastAPI(title="Settle Mock Merchant", version="0.1.0", lifespan=lifespan)
 app.state.merchant = MerchantState(get_settings().failure_rate)
+Instrumentator(
+    excluded_handlers=["/metrics", "/health/.*"],
+    should_instrument_requests_inprogress=True,
+    inprogress_labels=True,
+).instrument(
+    app,
+    # Millisecond-scale buckets; the library default (0.1, 0.5, 1 s) cannot show a p95 of 20 ms.
+    latency_lowr_buckets=(0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.25, 0.5, 1, 2.5, 5),
+).expose(app, include_in_schema=False)
+# Continues the trace from the webhook's traceparent header: the last hop of a transfer's trace.
+FastAPIInstrumentor.instrument_app(app, excluded_urls="/metrics,/health/live")
 
 
 @app.post("/webhooks")

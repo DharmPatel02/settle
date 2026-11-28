@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: settle
+    folder: Settle
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards

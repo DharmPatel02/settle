@@ -5,12 +5,13 @@ from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from webhook_service.config import get_settings
+from webhook_service.sql_tracing import trace_sql
 
 
 @lru_cache
 def get_engine() -> Engine:
     # One engine per process: it owns the connection pool shared by all requests.
-    return create_engine(
+    engine = create_engine(
         str(get_settings().database_url),
         # Test each pooled connection before use, so the app recovers by itself
         # after Postgres restarts instead of failing on stale connections.
@@ -18,6 +19,8 @@ def get_engine() -> Engine:
         # Fail fast instead of hanging when Postgres is unreachable.
         connect_args={"connect_timeout": 3},
     )
+    trace_sql(engine)
+    return engine
 
 
 @lru_cache

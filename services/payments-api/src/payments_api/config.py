@@ -22,6 +22,13 @@ class Settings(BaseSettings):
     risk_breaker_fail_max: int = Field(default=5, gt=0)
     risk_breaker_reset_seconds: float = Field(default=30, gt=0)
     risk_fallback_approve_max_minor: int = Field(default=10_000, ge=0)
+    db_pool_size: int = Field(default=5, gt=0)
+    db_max_overflow: int = Field(default=10, ge=0)
+    otel_enabled: bool = False
+    otel_exporter_otlp_endpoint: str = "http://localhost:4318"
+    relay_metrics_port: int = 9101
+    reconciliation_metrics_port: int = 9102
+    reconciliation_interval_seconds: float = Field(default=60, gt=0)
 
 
 @lru_cache

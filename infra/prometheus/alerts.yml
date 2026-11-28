@@ -1,0 +1,80 @@
+# Each alert has a matching section in docs/runbook.md. Process-level metrics are scoped to the
+# job that owns them: other processes import the same metrics module and export them as 0.
+groups:
+  - name: settle
+    rules:
+      - alert: HighErrorRate
+        expr: |
+          sum by (job) (rate(http_requests_total{status="5xx"}[5m]))
+            / sum by (job) (rate(http_requests_total[5m])) > 0.02
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $labels.job }}: more than 2% of requests fail with 5xx"
+          runbook: docs/runbook.md#higherrorrate
+
+      - alert: TransferLatencyHigh
+        expr: |
+          histogram_quantile(0.95, sum by (le) (
+            rate(http_request_duration_seconds_bucket{job="payments-api", handler="/v1/transfers", method="POST"}[5m])
+          )) > 0.25
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "POST /v1/transfers p95 latency is above 250 ms"
+          runbook: docs/runbook.md#transferlatencyhigh
+
+      - alert: OutboxLagHigh
+        expr: settle_outbox_lag_seconds{job="outbox-relay"} > 30
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: "Oldest unpublished outbox event is {{ $value | humanizeDuration }} old"
+          runbook: docs/runbook.md#outboxlaghigh
+
+      - alert: DeadLetterQueueNotEmpty
+        expr: settle_dlq_size{job="webhook-delivery-worker"} > 0
+        for: 1m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $value }} webhook deliveries are dead and waiting for replay"
+          runbook: docs/runbook.md#deadletterqueuenotempty
+
+      - alert: ReconciliationMismatch
+        expr: settle_reconciliation_mismatches{job="reconciliation"} > 0
+        labels:
+          severity: page
+        annotations:
+          summary: "Ledger invariant violated: {{ $value }} mismatches"
+          runbook: docs/runbook.md#reconciliationmismatch
+
+      - alert: ReconciliationStale
+        expr: time() - settle_reconciliation_last_success_timestamp_seconds{job="reconciliation"} > 300
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Reconciliation has not completed for over 5 minutes"
+          runbook: docs/runbook.md#reconciliationstale
+
+      - alert: RiskCircuitOpen
+        expr: settle_risk_circuit_state{job="payments-api"} == 2
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: "Risk-service circuit breaker is open; transfers use the fallback policy"
+          runbook: docs/runbook.md#riskcircuitopen
+
+      - alert: TargetDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $labels.job }} is not being scraped"
+          runbook: docs/runbook.md#targetdown
